@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Shelf</title>
+<meta name="theme-color" content="#0b0b0f">
+<meta name="description" content="Apps, games and sites made by friends. Rate them, review them, add yours.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.json">
+<style>
+:root{--bg:#0b0b0f;--card:#14141b;--card2:#1c1c26;--ink:#f3f3f7;--mute:#8d8d9c;--line:rgba(255,255,255,.08);--acc:#7c6cff;--star:#ffc233;--r:20px;color-scheme:dark}
+@media(prefers-color-scheme:light){:root{--bg:#f7f7fa;--card:#fff;--card2:#efeff5;--ink:#111118;--mute:#6b6b7a;--line:rgba(0,0,0,.08);color-scheme:light}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding-bottom:env(safe-area-inset-bottom)}
+body.lock{overflow:hidden}
+button,input,textarea{font:inherit;color:inherit}
+a{color:inherit;text-decoration:none}
+header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);transition:box-shadow .3s}
+header.up{box-shadow:0 1px 0 var(--line)}
+.logo{display:flex;align-items:center;gap:9px;font-weight:700;font-size:19px;letter-spacing:-.02em}
+.logo img{width:30px;height:30px;border-radius:9px}
+.sp{flex:1}
+.iconbtn{width:42px;height:42px;border-radius:50%;border:0;background:var(--card2);display:grid;place-items:center;cursor:pointer;transition:transform .2s,background .2s}
+.iconbtn:active{transform:scale(.9)}
+.plus{background:var(--acc);color:#fff}
+.plus svg{transition:transform .3s}.plus:hover svg{transform:rotate(90deg)}
+.iconbtn svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
+.search{max-width:0;opacity:0;padding:0;border:0;border-radius:21px;height:42px;background:var(--card2);outline:0;transition:max-width .35s cubic-bezier(.2,.8,.2,1),opacity .25s,padding .35s;width:100%}
+.search.on{max-width:260px;opacity:1;padding:0 16px}
+main{max-width:760px;margin:0 auto;padding:6px 16px 90px}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:8px 0 14px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;border:0;border-radius:999px;padding:8px 16px;background:var(--card);color:var(--mute);cursor:pointer;transition:all .25s}
+.chip.on{background:var(--ink);color:var(--bg);transform:scale(1.04)}
+.list{display:grid;gap:12px}
+@media(min-width:620px){.list{grid-template-columns:1fr 1fr}}
+.card{display:flex;gap:14px;align-items:center;padding:14px;background:var(--card);border-radius:var(--r);animation:up .5s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(var(--i)*45ms);transition:transform .2s,background .2s}
+.card:active{transform:scale(.975)}
+@media(hover:hover){.card:hover{transform:translateY(-3px);background:var(--card2)}}
+@keyframes up{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+.ic{width:64px;height:64px;border-radius:16px;object-fit:cover;flex:none;background:var(--card2)}
+.ph{display:grid;place-items:center;font-weight:700;font-size:26px;color:#fff;background:hsl(var(--h) 55% 48%)}
+.info{min-width:0;flex:1}
+.info b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.info span{display:block;color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{display:flex;gap:8px;align-items:center;margin-top:3px;font-size:12px;color:var(--mute)}
+.rt{color:var(--star);font-weight:600}.rt i{font-style:normal;color:var(--mute);font-weight:400}.rt.new{color:var(--acc)}
+.pill{padding:2px 8px;border-radius:99px;background:var(--card2);text-transform:capitalize}
+.skel{height:92px;border-radius:var(--r);background:linear-gradient(100deg,var(--card) 30%,var(--card2) 50%,var(--card) 70%) 0 0/300% 100%;animation:sh 1.3s linear infinite}
+@keyframes sh{to{background-position:-300% 0}}
+.empty{text-align:center;color:var(--mute);padding:60px 20px;animation:up .5s both}
+.empty b{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}
+.sheet{position:fixed;inset:0;z-index:50;background:var(--bg);overflow-y:auto;transform:translateY(100%);visibility:hidden;transition:transform .42s cubic-bezier(.2,.8,.2,1),visibility 0s .42s;padding-bottom:calc(40px + env(safe-area-inset-bottom))}
+.sheet.open{transform:none;visibility:visible;transition:transform .42s cubic-bezier(.2,.8,.2,1)}
+.bar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.bar h2{margin:0;font-size:17px;flex:1}
+.wrap{max-width:720px;margin:0 auto;padding:0 16px}
+.hero{display:flex;gap:16px;align-items:center;padding:8px 0 16px}
+.hero .ic{width:92px;height:92px;border-radius:24px;font-size:38px}
+.hero h1{margin:0;font-size:24px;letter-spacing:-.02em;line-height:1.15}
+.hero p{margin:2px 0 0;color:var(--mute)}
+.go{display:block;text-align:center;background:var(--acc);color:#fff;font-weight:600;padding:13px;border-radius:14px;margin:6px 0 20px;transition:transform .2s,filter .2s}
+.go:active{transform:scale(.97)}.go:hover{filter:brightness(1.1)}
+.shots{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;margin:0 -16px 20px;padding:0 16px;scrollbar-width:none}
+.shots::-webkit-scrollbar{display:none}
+.shots img{height:340px;border-radius:16px;scroll-snap-align:start;flex:none;background:var(--card);cursor:zoom-in;transition:transform .2s}
+.shots img:active{transform:scale(.97)}
+h3{margin:22px 0 10px;font-size:17px}
+.desc{white-space:pre-wrap;color:var(--mute)}
+.sum{display:flex;gap:20px;align-items:center;background:var(--card);border-radius:var(--r);padding:16px}
+.big{font-size:44px;font-weight:700;line-height:1;text-align:center}.big small{display:block;font-size:12px;font-weight:400;color:var(--mute);margin-top:6px}
+.bars{flex:1;display:grid;gap:5px}
+.bars div{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--mute)}
+.bars i{flex:1;height:6px;border-radius:9px;background:var(--card2);overflow:hidden}
+.bars u{display:block;height:100%;background:var(--star);border-radius:9px;width:0;transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.rev{background:var(--card);border-radius:var(--r);padding:14px;margin-bottom:10px;animation:up .4s both}
+.rev .t{display:flex;justify-content:space-between;color:var(--mute);font-size:12px}.rev .t b{color:var(--ink);font-weight:600;font-size:14px}
+.rev p{margin:6px 0 0;word-break:break-word}
+.form{background:var(--card);border-radius:var(--r);padding:16px;display:grid;gap:10px}
+.field{display:grid;gap:5px}.field label{font-size:12px;color:var(--mute)}
+input,textarea{width:100%;border:1px solid var(--line);background:var(--bg);border-radius:12px;padding:12px;outline:0;transition:border-color .2s}
+input:focus,textarea:focus{border-color:var(--acc)}
+textarea{resize:vertical;min-height:84px}
+.stars{display:flex;gap:4px}
+.stars button{border:0;background:none;font-size:34px;line-height:1;color:var(--card2);cursor:pointer;padding:0 2px;transition:transform .2s,color .2s}
+.stars button.on{color:var(--star)}.stars button:active{transform:scale(1.35)}
+.btn{border:0;border-radius:14px;background:var(--acc);color:#fff;font-weight:600;padding:13px;cursor:pointer;transition:transform .2s,opacity .2s}
+.btn:active{transform:scale(.97)}.btn[disabled]{opacity:.5}
+.seg{display:flex;background:var(--bg);border-radius:12px;padding:4px;gap:4px}
+.seg button{flex:1;border:0;border-radius:9px;padding:9px;background:none;color:var(--mute);cursor:pointer;transition:all .25s}
+.seg button.on{background:var(--card2);color:var(--ink)}
+.pick{display:flex;gap:10px;flex-wrap:wrap}
+.add{width:78px;height:78px;border-radius:16px;border:1.5px dashed var(--mute);background:none;color:var(--mute);font-size:28px;cursor:pointer;transition:transform .2s,border-color .2s}
+.add:active{transform:scale(.93)}
+.th{position:relative;animation:pop .3s cubic-bezier(.3,1.5,.5,1) both}
+.th img{height:78px;border-radius:12px;display:block}.th .ic{width:78px;height:78px}
+.th button{position:absolute;top:-6px;right:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--ink);color:var(--bg);cursor:pointer;line-height:1}
+@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.hp{position:absolute;left:-9999px}
+.lb{position:fixed;inset:0;z-index:90;background:rgba(0,0,0,.92);display:flex;overflow-x:auto;scroll-snap-type:x mandatory;opacity:0;pointer-events:none;transition:opacity .25s}
+.lb.open{opacity:1;pointer-events:auto}
+.lb img{flex:none;width:100%;height:100%;object-fit:contain;scroll-snap-align:center}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));z-index:99;transform:translate(-50%,30px);background:var(--ink);color:var(--bg);padding:11px 18px;border-radius:99px;opacity:0;pointer-events:none;transition:all .3s cubic-bezier(.2,.8,.2,1);max-width:90vw;text-align:center}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header id="hd">
+  <div class="logo"><img src="icon.svg" alt=""><span id="nm">Shelf</span></div>
+  <div class="sp"></div>
+  <input class="search" id="q" type="search" placeholder="Search" aria-label="Search">
+  <button class="iconbtn" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
+  <a class="iconbtn plus" href="#new" aria-label="Add your app"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></a>
+</header>
+<main>
+  <div class="chips" id="chips"></div>
+  <div class="list" id="list"></div>
+</main>
+
+<section class="sheet" id="detail"></section>
+
+<section class="sheet" id="newsheet">
+  <div class="bar"><a class="iconbtn" href="#" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></a><h2>Add your app</h2></div>
+  <div class="wrap"><form class="form" id="nf" autocomplete="off">
+    <div class="seg" id="seg"><button type="button" data-k="app" class="on">App</button><button type="button" data-k="game">Game</button><button type="button" data-k="website">Website</button></div>
+    <div class="field"><label>Icon</label><div class="pick" id="iconPick"><button type="button" class="add" id="iconAdd">+</button></div></div>
+    <div class="field"><label>Name *</label><input id="fn" maxlength="60" required></div>
+    <div class="field"><label>One-line tagline</label><input id="ft" maxlength="100"></div>
+    <div class="field"><label>Link to open it * (website, APK, Play Store...)</label><input id="fu" inputmode="url" placeholder="https://"></div>
+    <div class="field"><label>Your name</label><input id="fd" maxlength="40"></div>
+    <div class="field"><label>Description</label><textarea id="fx" maxlength="2000"></textarea></div>
+    <div class="field"><label>Screenshots (up to 6)</label><div class="pick" id="shotPick"><button type="button" class="add" id="shotAdd">+</button></div></div>
+    <input class="hp" id="hp" tabindex="-1" aria-hidden="true">
+    <button class="btn" id="pub">Publish</button>
+  </form></div>
+  <input type="file" id="iconFile" accept="image/*" hidden>
+  <input type="file" id="shotFile" accept="image/*" multiple hidden>
+</section>
+
+<div class="lb" id="lb"></div>
+<div class="toast" id="toast"></div>
+
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(function(){
+"use strict";
+var C=window.SHELF_CONFIG||{},$=function(s){return document.querySelector(s)};
+var esc=function(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})};
+var sb=null,apps=[],stats={},kind="all",query="";
+try{sb=supabase.createClient(C.supabaseUrl,C.supabaseAnonKey)}catch(e){}
+$("#nm").textContent=C.name||"Shelf";document.title=C.name||"Shelf";
+var dev;try{dev=localStorage.getItem("shelf_dev");if(!dev){dev=crypto.randomUUID();localStorage.setItem("shelf_dev",dev)}}catch(e){dev=String(Math.random())}
+function toast(m){var t=$("#toast");t.textContent=m;t.classList.add("on");clearTimeout(toast.t);toast.t=setTimeout(function(){t.classList.remove("on")},2800)}
+function tile(a){var h=0;for(var i=0;i<a.name.length;i++)h+=a.name.charCodeAt(i);
+  return a.icon?'<img class="ic" src="'+esc(a.icon)+'" alt="" loading="lazy">':'<div class="ic ph" style="--h:'+(h%360)+'">'+esc(a.name.charAt(0).toUpperCase())+'</div>'}
+function rate(id){var s=stats[id];return s?'<span class="rt">★ '+s.avg+' <i>('+s.n+')</i></span>':'<span class="rt new">New</span>'}
+
+/* ---------- home ---------- */
+var KINDS=[["all","All"],["app","Apps"],["game","Games"],["website","Sites"],["top","★ Top"]];
+function chips(){$("#chips").innerHTML=KINDS.map(function(k){return'<button class="chip'+(kind===k[0]?" on":"")+'" data-k="'+k[0]+'">'+k[1]+'</button>'}).join("")}
+function render(){
+  var l=apps.filter(function(a){return(kind==="all"||kind==="top"||a.kind===kind)&&(!query||(a.name+" "+(a.tagline||"")+" "+(a.dev||"")).toLowerCase().indexOf(query)>-1)});
+  if(kind==="top")l=l.filter(function(a){return stats[a.id]}).sort(function(a,b){return stats[b.id].avg-stats[a.id].avg||stats[b.id].n-stats[a.id].n});
+  $("#list").innerHTML=l.length?l.map(function(a,i){return'<a class="card" href="#'+a.id+'" style="--i:'+Math.min(i,12)+'">'+tile(a)+'<div class="info"><b>'+esc(a.name)+'</b><span>'+esc(a.tagline||a.dev||"")+'</span><div class="meta">'+rate(a.id)+'<span class="pill">'+esc(a.kind)+'</span></div></div></a>'}).join(""):
+   '<div class="empty" style="grid-column:1/-1"><b>'+(apps.length?"Nothing found":"No apps yet")+'</b>'+(apps.length?"Try another word.":"Tap the + button to add the first one.")+'</div>'}
+function skeleton(){$("#list").innerHTML='<div class="skel"></div><div class="skel"></div><div class="skel"></div><div class="skel"></div>'}
+async function load(){
+  if(!sb||/PASTE_/.test(C.supabaseUrl||"PASTE_")){$("#list").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Almost there</b>Open config.js and paste your Supabase URL and key.</div>';return}
+  skeleton();
+  var r=await Promise.all([sb.from("apps").select("id,name,tagline,kind,icon,dev,created_at").order("created_at",{ascending:false}).limit(300),sb.from("app_stats").select("*")]);
+  if(r[0].error){$("#list").innerHTML='<div class="empty" style="grid-column:1/-1"><b>Couldn\'t load</b>'+esc(r[0].error.message)+'</div>';return}
+  apps=r[0].data||[];stats={};(r[1].data||[]).forEach(function(s){stats[s.app_id]=s});render();route()
+}
+$("#chips").onclick=function(e){var b=e.target.closest(".chip");if(!b)return;kind=b.dataset.k;chips();render()};
+$("#sb").onclick=function(){var q=$("#q");q.classList.toggle("on");if(q.classList.contains("on"))q.focus();else{q.value="";query="";render()}};
+$("#q").oninput=function(){query=this.value.trim().toLowerCase();render()};
+window.addEventListener("scroll",function(){$("#hd").classList.toggle("up",scrollY>8)},{passive:true});
+
+/* ---------- detail ---------- */
+async function openDetail(id){
+  var el=$("#detail"),a=apps.find(function(x){return x.id===id});
+  el.innerHTML='<div class="bar"><a class="iconbtn" href="#" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></a><h2>'+esc(a?a.name:"")+'</h2><button class="iconbtn" id="shr" aria-label="Share"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 8l5-5 5 5M5 14v6h14v-6"/></svg></button></div><div class="wrap"><div class="skel" style="margin-top:20px"></div></div>';
+  open(el);
+  var r=await Promise.all([sb.from("apps").select("*").eq("id",id).single(),sb.from("reviews").select("name,stars,body,created_at").eq("app_id",id).order("created_at",{ascending:false}).limit(100)]);
+  if(r[0].error||!r[0].data){el.querySelector(".wrap").innerHTML='<div class="empty"><b>Not found</b>This app may have been removed.</div>';return}
+  var d=r[0].data,rv=r[1].data||[],cnt=[0,0,0,0,0],sum=0;rv.forEach(function(x){cnt[x.stars-1]++;sum+=x.stars});
+  var avg=rv.length?(sum/rv.length).toFixed(1):"–",mx=Math.max.apply(null,cnt.concat(1));
+  var h='<div class="hero">'+tile(d)+'<div><h1>'+esc(d.name)+'</h1><p>'+esc(d.dev||"")+'</p><div class="meta">'+rate(d.id)+'<span class="pill">'+esc(d.kind)+'</span></div></div></div>'+
+   '<a class="go" target="_blank" rel="noopener noreferrer" href="'+esc(d.url)+'">'+(d.kind==="website"?"Visit site":"Open / Get")+'</a>';
+  if(d.shots&&d.shots.length)h+='<div class="shots">'+d.shots.map(function(s,i){return'<img src="'+esc(s)+'" data-i="'+i+'" alt="Screenshot '+(i+1)+'" loading="lazy">'}).join("")+'</div>';
+  if(d.tagline)h+='<b>'+esc(d.tagline)+'</b>';
+  if(d.description)h+='<h3>About</h3><div class="desc">'+esc(d.description)+'</div>';
+  h+='<h3>Ratings &amp; reviews</h3><div class="sum"><div class="big">'+avg+'<small>'+rv.length+' rating'+(rv.length===1?"":"s")+'</small></div><div class="bars">'+[5,4,3,2,1].map(function(n){return'<div>'+n+'<i><u data-w="'+Math.round(cnt[n-1]/mx*100)+'"></u></i></div>'}).join("")+'</div></div>'+
+   '<h3>Rate this</h3><div class="form"><div class="stars" id="st">'+[1,2,3,4,5].map(function(n){return'<button type="button" data-n="'+n+'" aria-label="'+n+' stars">★</button>'}).join("")+'</div><input id="rn" maxlength="40" placeholder="Your name (optional)"><textarea id="rb" maxlength="600" placeholder="Write a review (optional)"></textarea><button class="btn" id="rs">Submit review</button></div>'+
+   '<h3>Reviews</h3><div id="rl">'+(rv.length?rv.map(function(x,i){return'<div class="rev" style="animation-delay:'+Math.min(i,8)*50+'ms"><div class="t"><b>'+esc(x.name||"Anonymous")+'</b><span>'+new Date(x.created_at).toLocaleDateString()+'</span></div><div class="rt">'+"★".repeat(x.stars)+'</div>'+(x.body?'<p>'+esc(x.body)+'</p>':"")+'</div>'}).join(""):'<div class="empty" style="padding:24px">No reviews yet. Be the first.</div>')+'</div>';
+  el.querySelector(".wrap").innerHTML=h;
+  requestAnimationFrame(function(){el.querySelectorAll(".bars u").forEach(function(u){u.style.width=u.dataset.w+"%"})});
+  var shots=d.shots||[];
+  el.querySelectorAll(".shots img").forEach(function(im){im.onclick=function(){lightbox(shots,+im.dataset.i)}});
+  var star=0,st=$("#st");
+  st.onclick=function(e){var b=e.target.closest("button");if(!b)return;star=+b.dataset.n;st.querySelectorAll("button").forEach(function(x){x.classList.toggle("on",+x.dataset.n<=star)})};
+  $("#rs").onclick=async function(){
+    if(!star)return toast("Tap the stars first");
+    this.disabled=true;
+    var e=(await sb.from("reviews").insert({app_id:id,device:dev,stars:star,name:$("#rn").value.trim()||null,body:$("#rb").value.trim()||null})).error;
+    if(e){this.disabled=false;return toast(e.code==="23505"?"You already reviewed this on this device":"Couldn't send: "+e.message)}
+    toast("Thanks for your review!");await load()};
+  $("#shr").onclick=async function(){var u=location.origin+location.pathname+"#"+id;
+    try{if(navigator.share)await navigator.share({title:d.name,url:u});else{await navigator.clipboard.writeText(u);toast("Link copied")}}catch(e){}}
+}
+function lightbox(list,i){var lb=$("#lb");lb.innerHTML=list.map(function(s){return'<img src="'+esc(s)+'" alt="">'}).join("");lb.classList.add("open");lb.scrollLeft=lb.clientWidth*i}
+$("#lb").onclick=function(){this.classList.remove("open")};
+
+/* ---------- add your app ---------- */
+var nk="app",iconBlob=null,shotBlobs=[];
+function shrink(file,max,square){return new Promise(function(res,rej){var im=new Image();im.onload=function(){var sx=0,sy=0,sw=im.width,sh=im.height;if(square){var m=Math.min(sw,sh);sx=(sw-m)/2;sy=(sh-m)/2;sw=sh=m}var k=Math.min(1,max/Math.max(sw,sh)),cv=document.createElement("canvas");cv.width=Math.round(sw*k);cv.height=Math.round(sh*k);cv.getContext("2d").drawImage(im,sx,sy,sw,sh,0,0,cv.width,cv.height);cv.toBlob(function(b){b?res(b):rej(new Error("image"))},"image/jpeg",.84)};im.onerror=function(){rej(new Error("Couldn't read that image"))};im.src=URL.createObjectURL(file)})}
+$("#seg").onclick=function(e){var b=e.target.closest("button");if(!b)return;nk=b.dataset.k;this.querySelectorAll("button").forEach(function(x){x.classList.toggle("on",x===b)})};
+$("#iconAdd").onclick=function(){$("#iconFile").click()};$("#shotAdd").onclick=function(){$("#shotFile").click()};
+function thumbs(){
+  $("#iconPick").innerHTML=iconBlob?'<div class="th"><img class="ic" src="'+URL.createObjectURL(iconBlob)+'" alt=""><button type="button" data-x="icon">×</button></div>':'<button type="button" class="add" id="iconAdd">+</button>';
+  $("#shotPick").innerHTML=shotBlobs.map(function(b,i){return'<div class="th"><img src="'+URL.createObjectURL(b)+'" alt=""><button type="button" data-x="'+i+'">×</button></div>'}).join("")+(shotBlobs.length<6?'<button type="button" class="add" id="shotAdd">+</button>':"");
+  var ia=$("#iconAdd"),sa=$("#shotAdd");if(ia)ia.onclick=function(){$("#iconFile").click()};if(sa)sa.onclick=function(){$("#shotFile").click()}}
+$("#nf").onclick=function(e){var x=e.target.closest("[data-x]");if(!x)return;if(x.dataset.x==="icon")iconBlob=null;else shotBlobs.splice(+x.dataset.x,1);thumbs()};
+$("#iconFile").onchange=async function(){var f=this.files[0];this.value="";if(!f)return;try{iconBlob=await shrink(f,256,true);thumbs()}catch(e){toast(e.message)}};
+$("#shotFile").onchange=async function(){var fs=Array.prototype.slice.call(this.files);this.value="";for(var i=0;i<fs.length&&shotBlobs.length<6;i++){try{shotBlobs.push(await shrink(fs[i],1280,false))}catch(e){toast(e.message)}}thumbs()};
+async function up(blob){var p=crypto.randomUUID()+".jpg",r=await sb.storage.from("shots").upload(p,blob,{contentType:"image/jpeg"});if(r.error)throw r.error;return sb.storage.from("shots").getPublicUrl(p).data.publicUrl}
+$("#nf").onsubmit=async function(e){
+  e.preventDefault();if($("#hp").value)return;
+  var name=$("#fn").value.trim(),url=$("#fu").value.trim();
+  if(!name)return toast("Add a name");if(!url)return toast("Add a link to your app");
+  if(!/^https?:\/\//i.test(url))url="https://"+url;
+  var last=+localStorage.getItem("shelf_last")||0;if(Date.now()-last<30000)return toast("Please wait a few seconds");
+  var b=$("#pub");b.disabled=true;b.textContent="Publishing…";
+  try{
+    var icon=iconBlob?await up(iconBlob):null,shots=await Promise.all(shotBlobs.map(up));
+    var r=await sb.from("apps").insert({name:name,tagline:$("#ft").value.trim()||null,description:$("#fx").value.trim()||null,kind:nk,url:url,dev:$("#fd").value.trim()||null,icon:icon,shots:shots}).select("id").single();
+    if(r.error)throw r.error;
+    localStorage.setItem("shelf_last",Date.now());
+    $("#nf").reset();iconBlob=null;shotBlobs=[];thumbs();toast("Published! 🎉");await load();location.hash=r.data.id
+  }catch(err){toast("Couldn't publish: "+(err.message||err))}
+  b.disabled=false;b.textContent="Publish"};
+
+/* ---------- sheets + routing (the phone's Back button closes them) ---------- */
+function open(el){el.classList.add("open");document.body.classList.add("lock")}
+function route(){
+  var h=decodeURIComponent(location.hash.slice(1));
+  var d=$("#detail"),n=$("#newsheet");
+  $("#lb").classList.remove("open");
+  if(h==="new"){d.classList.remove("open");open(n);return}
+  n.classList.remove("open");
+  if(h&&sb){openDetail(h);return}
+  d.classList.remove("open");document.body.classList.remove("lock")}
+window.addEventListener("hashchange",route);
+chips();load();
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(function(){});
+})();
+</script>
+</body>
+</html>
