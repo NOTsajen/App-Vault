@@ -1,0 +1,1729 @@
+name: Build ECHO-1 APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Your Vercel address, e.g. https://echo-1-nu.vercel.app"
+        required: true
+        default: "https://echo-1-nu.vercel.app"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Create the project
+        env:
+          ECHO_URL: ${{ inputs.url }}
+        run: |
+          mkdir -p app/www app/native
+          cd app
+          cat > package.json <<'EOF'
+          {
+            "name": "echo-1-app",
+            "version": "1.0.0",
+            "private": true,
+            "dependencies": { "@capacitor/android": "^7.0.0", "@capacitor/core": "^7.0.0" },
+            "devDependencies": { "@capacitor/cli": "^7.0.0" }
+          }
+          EOF
+          node -e "require('fs').writeFileSync('capacitor.config.json', JSON.stringify({appId:'com.echo1.app',appName:'ECHO-1',webDir:'www',server:{url:process.env.ECHO_URL,androidScheme:'https'}},null,2))"
+          cat > www/index.html <<'EOF'
+          <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ECHO-1</title>
+          <body style="margin:0;height:100vh;display:grid;place-items:center;background:#0c0a1c;color:#f4f1ff;font-family:sans-serif;text-align:center">
+          <p>Can't reach the server. Check your internet and reopen the app.</p></body>
+          EOF
+          cat > native/AlarmPlugin.java <<'EOF'
+          package com.echo1.app;
+
+          import android.content.Intent;
+          import android.provider.AlarmClock;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          /** Sets a real alarm or timer in the phone's Clock app. Websites are not allowed to do this, a native app is. */
+          @CapacitorPlugin(name = "Alarm")
+          public class AlarmPlugin extends Plugin {
+
+              @PluginMethod
+              public void set(PluginCall call) {
+                  Integer hour = call.getInt("hour"), minute = call.getInt("minute");
+                  if (hour == null || minute == null) { call.reject("hour and minute are required"); return; }
+                  Intent i = new Intent(AlarmClock.ACTION_SET_ALARM)
+                      .putExtra(AlarmClock.EXTRA_HOUR, hour)
+                      .putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                      .putExtra(AlarmClock.EXTRA_MESSAGE, call.getString("label", "Alarm"))
+                      .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  start(call, i);
+              }
+
+              @PluginMethod
+              public void timer(PluginCall call) {
+                  Integer seconds = call.getInt("seconds");
+                  if (seconds == null) { call.reject("seconds is required"); return; }
+                  Intent i = new Intent(AlarmClock.ACTION_SET_TIMER)
+                      .putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                      .putExtra(AlarmClock.EXTRA_MESSAGE, call.getString("label", "Timer"))
+                      .putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                  start(call, i);
+              }
+
+              private void start(PluginCall call, Intent i) {
+                  try { getContext().startActivity(i); call.resolve(); }
+                  catch (Exception e) { call.reject("No Clock app could handle this"); }
+              }
+          }
+          EOF
+          cat > native/LauncherPlugin.java <<'EOF'
+          package com.echo1.app;
+
+          import android.content.Intent;
+          import android.net.Uri;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          /** Opens installed apps by package name, and store or other links. A website inside a WebView can't do this on its own. */
+          @CapacitorPlugin(name = "Launcher")
+          public class LauncherPlugin extends Plugin {
+
+              private boolean view(String uri) {
+                  try {
+                      Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                      getContext().startActivity(i);
+                      return true;
+                  } catch (Exception e) { return false; }
+              }
+
+              /** Opens the app. If it is not installed, opens `fallback` if given, otherwise its Google Play page. */
+              @PluginMethod
+              public void launchPackage(PluginCall call) {
+                  String pkg = call.getString("package");
+                  String fallback = call.getString("fallback", "");
+                  if (pkg == null || pkg.isEmpty()) { call.reject("package is required"); return; }
+                  try {
+                      Intent i = getContext().getPackageManager().getLaunchIntentForPackage(pkg);
+                      if (i != null) {
+                          i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                          getContext().startActivity(i);
+                          call.resolve();
+                          return;
+                      }
+                  } catch (Exception ignored) { }
+                  if (fallback != null && !fallback.isEmpty() && view(fallback)) { call.resolve(); return; }
+                  if (view("market://details?id=" + pkg) || view("https://play.google.com/store/apps/details?id=" + pkg)) { call.resolve(); return; }
+                  call.reject("Could not open " + pkg);
+              }
+
+              /** Opens any link (market://, https://, a custom scheme). Falls back to `fallback` if nothing can open it. */
+              @PluginMethod
+              public void open(PluginCall call) {
+                  String uri = call.getString("uri");
+                  String fallback = call.getString("fallback", "");
+                  if (uri == null || uri.isEmpty()) { call.reject("uri is required"); return; }
+                  if (view(uri)) { call.resolve(); return; }
+                  if (fallback != null && !fallback.isEmpty() && view(fallback)) { call.resolve(); return; }
+                  call.reject("Nothing could open this link");
+              }
+          }
+          EOF
+          cat > native/AssistPlugin.java <<'EOF'
+          package com.echo1.app;
+
+          import android.content.Intent;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.provider.Settings;
+          import com.getcapacitor.JSObject;
+          import com.getcapacitor.Plugin;
+          import com.getcapacitor.PluginCall;
+          import com.getcapacitor.PluginMethod;
+          import com.getcapacitor.annotation.CapacitorPlugin;
+
+          /** Hands what you said or typed in the assistant bubble over to the ECHO-1 web app, and helps set ECHO-1 as the phone's assistant. */
+          @CapacitorPlugin(name = "Assist")
+          public class AssistPlugin extends Plugin {
+              static volatile String pending = "";
+
+              @PluginMethod
+              public void takeQuery(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("text", pending == null ? "" : pending);
+                  pending = "";
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void isDefault(PluginCall call) {
+                  boolean yes = false;
+                  try {
+                      String s = Settings.Secure.getString(getContext().getContentResolver(), "assistant");
+                      yes = s != null && s.contains(getContext().getPackageName());
+                  } catch (Exception ignored) { }
+                  JSObject r = new JSObject();
+                  r.put("value", yes);
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void openSettings(PluginCall call) {
+                  String[] actions = { Settings.ACTION_VOICE_INPUT_SETTINGS, Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS, Settings.ACTION_SETTINGS };
+                  for (String a : actions) {
+                      try {
+                          getContext().startActivity(new Intent(a).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                          call.resolve();
+                          return;
+                      } catch (Exception ignored) { }
+                  }
+                  call.reject("Could not open settings");
+              }
+
+              @PluginMethod
+              public void canOverlay(PluginCall call) {
+                  JSObject r = new JSObject();
+                  r.put("value", Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(getContext()));
+                  call.resolve(r);
+              }
+
+              @PluginMethod
+              public void requestOverlay(PluginCall call) {
+                  try {
+                      getContext().startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getContext().getPackageName()))
+                          .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                      call.resolve();
+                  } catch (Exception e) { call.reject("Could not open the permission page"); }
+              }
+
+              @PluginMethod
+              public void showBubble(PluginCall call) {
+                  if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(getContext())) { call.reject("Overlay permission is off"); return; }
+                  try {
+                      android.content.SharedPreferences bp = getContext().getSharedPreferences("echo_bubble_prefs", android.content.Context.MODE_PRIVATE);
+                      boolean auto = Boolean.TRUE.equals(call.getBoolean("auto", false));
+                      if (auto && bp.getBoolean("removed", false)) { call.resolve(); return; }   // you dragged it away: stay removed until "show bubble"
+                      if (!auto) bp.edit().putBoolean("removed", false).apply();
+                      Intent i = new Intent(getContext(), BubbleService.class);
+                      String base = call.getString("url");
+                      if (base != null && base.startsWith("http")) i.putExtra("base", base);
+                      i.putExtra("fromApp", true);
+                      if (Build.VERSION.SDK_INT >= 26) getContext().startForegroundService(i); else getContext().startService(i);
+                      call.resolve();
+                  } catch (Exception e) { call.reject("Could not start the bubble"); }
+              }
+
+              @PluginMethod
+              public void hideBubble(PluginCall call) {
+                  try { getContext().stopService(new Intent(getContext(), BubbleService.class)); } catch (Exception ignored) { }
+                  call.resolve();
+              }
+          }
+          EOF
+          cat > native/BubbleService.java <<'EOF'
+          package com.echo1.app;
+
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.app.Application;
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.ServiceInfo;
+          import android.graphics.Color;
+          import android.graphics.PixelFormat;
+          import android.graphics.drawable.GradientDrawable;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.util.DisplayMetrics;
+          import android.view.Gravity;
+          import android.view.HapticFeedbackConstants;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.WindowManager;
+          import android.webkit.WebResourceError;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import android.widget.ImageView;
+          import android.widget.TextView;
+          import android.widget.Toast;
+          import org.json.JSONObject;
+
+          /**
+           * ECHO-1 floating companion: the same full-body chibi as inside the app.
+           * It runs the app's own companion code (bubble.html) in a small transparent web view, so it blinks, waves, nods,
+           * dozes off and reacts like the in-app chibi, and it uses the same saved look (boy or girl, colours, outfit).
+           * Drag to move. Drag it down onto the X to remove it. Tap to talk. Long-press for size.
+           */
+          public class BubbleService extends Service {
+              static final String PREFS = "echo_bubble_prefs";
+              private static final String PX = "x", PY = "y", PH = "h", PBASE = "base", PREMOVED = "removed";
+              static BubbleService live;
+
+              private WindowManager wm;
+              private FrameLayout box;
+              private WebView web;
+              private ImageView fallback;
+              private WindowManager.LayoutParams lp;
+              private FrameLayout zone;
+              private GradientDrawable zoneBg;
+              private boolean zoneShown = false, overZone = false, failed = false, wasHidden = false;
+              private SharedPreferences prefs;
+              private final Handler ui = new Handler(Looper.getMainLooper());
+              private int appScreens = 0;
+              private Application.ActivityLifecycleCallbacks life;
+
+              // touch state
+              private float downX, downY;
+              private int startX, startY;
+              private boolean moved, longDone;
+              private final Runnable longPress = new Runnable() {
+                  @Override public void run() { if (!moved) { longDone = true; showCustomize(); } }
+              };
+
+              // ---- called by the assistant card, so the chibi reacts while you talk to it ----
+              static void js(final String code) {
+                  final BubbleService s = live;
+                  if (s == null) return;
+                  s.ui.post(new Runnable() {
+                      @Override public void run() { try { if (s.web != null && !s.failed) s.web.evaluateJavascript(code, null); } catch (Exception ignored) { } }
+                  });
+              }
+              static void state(String st) { js("window.EchoBubble&&EchoBubble.state('" + st + "')"); }
+              static void gesture(String g) { js("window.EchoBubble&&EchoBubble.gesture('" + g + "')"); }
+              static void react(String text, boolean fromUser) { js("window.EchoBubble&&EchoBubble.react(" + JSONObject.quote(text == null ? "" : text) + "," + fromUser + ")"); }
+
+              @Override public IBinder onBind(Intent i) { return null; }
+              private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+              @Override public void onCreate() {
+                  super.onCreate();
+                  live = this;
+                  // The chibi inside the app is the same character, so the floating one hides while ECHO-1 itself is open.
+                  life = new Application.ActivityLifecycleCallbacks() {
+                      @Override public void onActivityStarted(Activity a) { if (a instanceof MainActivity) { appScreens++; syncVisible(); } }
+                      @Override public void onActivityStopped(Activity a) { if (a instanceof MainActivity) { appScreens = Math.max(0, appScreens - 1); syncVisible(); } }
+                      @Override public void onActivityCreated(Activity a, Bundle b) { }
+                      @Override public void onActivityResumed(Activity a) { }
+                      @Override public void onActivityPaused(Activity a) { }
+                      @Override public void onActivitySaveInstanceState(Activity a, Bundle b) { }
+                      @Override public void onActivityDestroyed(Activity a) { }
+                  };
+                  try { getApplication().registerActivityLifecycleCallbacks(life); } catch (Exception ignored) { }
+              }
+
+              @Override public int onStartCommand(Intent intent, int flags, int startId) {
+                  prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+                  if (intent != null && "STOP".equals(intent.getAction())) {
+                      prefs.edit().putBoolean(PREMOVED, true).apply();
+                      stopSelf();
+                      return START_NOT_STICKY;
+                  }
+                  if (intent != null && intent.getStringExtra("base") != null) prefs.edit().putString(PBASE, intent.getStringExtra("base")).apply();
+                  goForeground();
+                  if (box == null) {
+                      // Started from inside the app: the app is in front, so stay hidden until it is closed (its own chibi is on screen).
+                      if (intent != null && intent.getBooleanExtra("fromApp", false)) appScreens = 1;
+                      addBubble();
+                  }
+                  return START_STICKY;
+              }
+
+              private void goForeground() {
+                  String ch = "echo_bubble";
+                  NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                  if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(ch) == null)
+                      nm.createNotificationChannel(new NotificationChannel(ch, "ECHO-1 bubble", NotificationManager.IMPORTANCE_MIN));
+                  PendingIntent hide = PendingIntent.getService(this, 1, new Intent(this, BubbleService.class).setAction("STOP"),
+                      PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                  Notification.Builder nb = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                  nb.setContentTitle("ECHO-1 companion is on").setContentText("Tap here to hide it · or drag it down to remove it")
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentIntent(hide).setOngoing(true);
+                  Notification n = nb.build();
+                  if (Build.VERSION.SDK_INT >= 34) startForeground(7, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                  else startForeground(7, n);
+              }
+
+              private DisplayMetrics real() {
+                  DisplayMetrics m = new DisplayMetrics();
+                  wm.getDefaultDisplay().getRealMetrics(m);
+                  return m;
+              }
+
+              @SuppressLint("SetJavaScriptEnabled")
+              private void addBubble() {
+                  wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+                  int h = dp(prefs.getInt(PH, 120));
+                  int w = Math.round(h * 22f / 32f);
+
+                  box = new FrameLayout(this) {
+                      @Override public boolean onInterceptTouchEvent(MotionEvent e) { return true; }
+                      @Override public boolean onTouchEvent(MotionEvent e) { return handleTouch(e); }
+                  };
+
+                  // Simple icon, only shown if the chibi page can't load (for example, no internet).
+                  fallback = new ImageView(this);
+                  fallback.setImageResource(R.drawable.echo_widget_icon);
+                  fallback.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                  fallback.setPadding(dp(6), dp(6), dp(6), dp(6));
+                  GradientDrawable fb = new GradientDrawable();
+                  fb.setShape(GradientDrawable.OVAL);
+                  fb.setColor(0xFF14101F);
+                  fb.setStroke(dp(2), 0xFFC8F43A);
+                  fallback.setBackground(fb);
+                  fallback.setVisibility(View.GONE);
+                  box.addView(fallback, new FrameLayout.LayoutParams(Math.min(w, h), Math.min(w, h), Gravity.CENTER));
+
+                  web = new WebView(getApplicationContext());
+                  web.setBackgroundColor(Color.TRANSPARENT);
+                  web.setVerticalScrollBarEnabled(false);
+                  web.setHorizontalScrollBarEnabled(false);
+                  WebSettings ws = web.getSettings();
+                  ws.setJavaScriptEnabled(true);
+                  ws.setDomStorageEnabled(true);          // same site storage as the app, so it uses your saved look
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError err) { if (r.isForMainFrame()) showFallback(); }
+                      @Override public void onReceivedHttpError(WebView v, WebResourceRequest r, WebResourceResponse res) { if (r.isForMainFrame() && res.getStatusCode() >= 400) showFallback(); }
+                      @Override public void onPageFinished(WebView v, String u) { if (!failed) gesture("wave"); }
+                  });
+                  box.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+                  lp = new WindowManager.LayoutParams(w, h,
+                      Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                      PixelFormat.TRANSLUCENT);
+                  lp.gravity = Gravity.TOP | Gravity.START;
+                  lp.x = prefs.getInt(PX, dp(12));
+                  lp.y = prefs.getInt(PY, dp(240));
+                  try { wm.addView(box, lp); } catch (Exception e) { box = null; stopSelf(); return; }
+
+                  String base = prefs.getString(PBASE, "");
+                  if (base == null || base.length() < 8) showFallback();
+                  else web.loadUrl(base.replaceAll("/+$", "") + "/bubble.html?from=android");
+                  syncVisible();
+              }
+
+              private void showFallback() {
+                  failed = true;
+                  ui.post(new Runnable() {
+                      @Override public void run() {
+                          if (web != null) web.setVisibility(View.GONE);
+                          if (fallback != null) fallback.setVisibility(View.VISIBLE);
+                      }
+                  });
+              }
+
+              private void syncVisible() {
+                  if (box == null) return;
+                  boolean hide = appScreens > 0;
+                  if (hide) { wasHidden = true; box.setVisibility(View.GONE); try { if (web != null) web.onPause(); } catch (Exception ignored) { } return; }
+                  box.setVisibility(View.VISIBLE);
+                  try { if (web != null) web.onResume(); } catch (Exception ignored) { }
+                  if (wasHidden) {            // you may have changed her look in the app, so load it again
+                      wasHidden = false;
+                      if (web != null && !failed) { try { web.reload(); } catch (Exception ignored) { } }
+                  }
+              }
+
+              // ---- touch: drag to move, drag down onto the X to remove, tap to talk, long-press for size ----
+              private boolean handleTouch(MotionEvent e) {
+                  switch (e.getActionMasked()) {
+                      case MotionEvent.ACTION_DOWN:
+                          downX = e.getRawX(); downY = e.getRawY(); startX = lp.x; startY = lp.y; moved = false; longDone = false;
+                          ui.postDelayed(longPress, 550);
+                          return true;
+                      case MotionEvent.ACTION_MOVE: {
+                          if (!moved && (Math.abs(e.getRawX() - downX) > dp(8) || Math.abs(e.getRawY() - downY) > dp(8))) {
+                              moved = true;
+                              ui.removeCallbacks(longPress);
+                              showZone();
+                              js("window.EchoBubble&&EchoBubble.drag(true)");
+                          }
+                          if (moved) {
+                              DisplayMetrics m = real();
+                              lp.x = Math.max(0, Math.min(m.widthPixels - lp.width, startX + Math.round(e.getRawX() - downX)));
+                              lp.y = Math.max(0, Math.min(m.heightPixels - lp.height, startY + Math.round(e.getRawY() - downY)));
+                              try { wm.updateViewLayout(box, lp); } catch (Exception ignored) { }
+                              checkZone(m);
+                          }
+                          return true;
+                      }
+                      case MotionEvent.ACTION_UP:
+                      case MotionEvent.ACTION_CANCEL: {
+                          ui.removeCallbacks(longPress);
+                          boolean up = e.getActionMasked() == MotionEvent.ACTION_UP;
+                          if (moved) {
+                              boolean drop = overZone;
+                              hideZone();
+                              js("window.EchoBubble&&EchoBubble.drag(false)");
+                              if (drop && up) { removeForGood(); return true; }
+                              prefs.edit().putInt(PX, lp.x).putInt(PY, lp.y).apply();
+                          } else if (up && !longDone) {
+                              gesture("wave");
+                              openAssistant();
+                          }
+                          return true;
+                      }
+                  }
+                  return true;
+              }
+
+              private void showZone() {
+                  if (zoneShown) return;
+                  zone = new FrameLayout(this);
+                  zoneBg = new GradientDrawable();
+                  zoneBg.setShape(GradientDrawable.OVAL);
+                  zoneBg.setColor(0xCC14101F);
+                  zoneBg.setStroke(dp(2), 0x66FFFFFF);
+                  zone.setBackground(zoneBg);
+                  TextView x = new TextView(this);
+                  x.setText("✕");
+                  x.setTextColor(0xFFF4F1FF);
+                  x.setTextSize(22);
+                  x.setGravity(Gravity.CENTER);
+                  zone.addView(x, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  WindowManager.LayoutParams zl = new WindowManager.LayoutParams(dp(68), dp(68),
+                      Build.VERSION.SDK_INT >= 26 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                      PixelFormat.TRANSLUCENT);
+                  zl.gravity = Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL;
+                  zl.y = dp(56);
+                  try { wm.addView(zone, zl); zoneShown = true; } catch (Exception ignored) { zone = null; }
+                  overZone = false;
+              }
+
+              private void checkZone(DisplayMetrics m) {
+                  if (!zoneShown || zone == null) return;
+                  float cx = lp.x + lp.width / 2f, cy = lp.y + lp.height / 2f;
+                  float zx = m.widthPixels / 2f, zy = m.heightPixels - dp(56) - dp(34);
+                  boolean over = Math.hypot(cx - zx, cy - zy) < dp(95);
+                  if (over != overZone) {
+                      overZone = over;
+                      zoneBg.setColor(over ? 0xFFE5484D : 0xCC14101F);
+                      zone.setScaleX(over ? 1.3f : 1f);
+                      zone.setScaleY(over ? 1.3f : 1f);
+                      if (over) { try { box.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Exception ignored) { } }
+                  }
+              }
+
+              private void hideZone() {
+                  if (zone != null) { try { wm.removeView(zone); } catch (Exception ignored) { } }
+                  zone = null; zoneShown = false; overZone = false;
+              }
+
+              private void removeForGood() {
+                  prefs.edit().putBoolean(PREMOVED, true).apply();   // stays removed until you say "show bubble" again
+                  stopSelf();
+              }
+
+              private void openAssistant() {
+                  try { startActivity(new Intent(BubbleService.this, AssistActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)); }
+                  catch (Exception ignored) { Toast.makeText(this, "Could not open ECHO-1", Toast.LENGTH_SHORT).show(); }
+              }
+
+              private void showCustomize() {
+                  if (box == null || !box.isAttachedToWindow()) return;
+                  final String[] choices = new String[] { "Small", "Medium", "Large", "Extra large", "Remove from screen" };
+                  AlertDialog dialog = new AlertDialog.Builder(this).setTitle("ECHO-1 companion")
+                      .setItems(choices, new android.content.DialogInterface.OnClickListener() {
+                          @Override public void onClick(android.content.DialogInterface d, int which) {
+                              if (which < 4) {
+                                  int[] hs = new int[] { 90, 120, 150, 180 };
+                                  int h = dp(hs[which]);
+                                  prefs.edit().putInt(PH, hs[which]).apply();
+                                  lp.height = h;
+                                  lp.width = Math.round(h * 22f / 32f);
+                                  try { wm.updateViewLayout(box, lp); } catch (Exception ignored) { }
+                              } else removeForGood();
+                          }
+                      }).setNegativeButton("Cancel", null).create();
+                  if (dialog.getWindow() != null && Build.VERSION.SDK_INT >= 26) dialog.getWindow().setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY);
+                  dialog.show();
+              }
+
+              @Override public void onDestroy() {
+                  super.onDestroy();
+                  if (live == this) live = null;
+                  ui.removeCallbacksAndMessages(null);
+                  hideZone();
+                  try { if (life != null) getApplication().unregisterActivityLifecycleCallbacks(life); } catch (Exception ignored) { }
+                  try { if (wm != null && box != null) wm.removeView(box); } catch (Exception ignored) { }
+                  try { if (web != null) { web.stopLoading(); web.destroy(); } } catch (Exception ignored) { }
+                  box = null; web = null;
+              }
+          }
+          EOF
+          cat > native/AssistActivity.java <<'EOF'
+          package com.echo1.app;
+
+          import android.Manifest;
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.content.ActivityNotFoundException;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.graphics.Color;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.provider.AlarmClock;
+          import android.speech.RecognitionListener;
+          import android.speech.RecognizerIntent;
+          import android.speech.SpeechRecognizer;
+          import android.speech.tts.TextToSpeech;
+          import android.speech.tts.UtteranceProgressListener;
+          import android.net.http.SslError;
+          import android.view.Gravity;
+          import android.view.View;
+          import android.webkit.SslErrorHandler;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+          import android.view.ViewGroup;
+          import android.view.WindowManager;
+          import android.view.inputmethod.InputMethodManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebResourceError;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import android.widget.Toast;
+          import java.io.BufferedReader;
+          import java.io.InputStream;
+          import java.io.InputStreamReader;
+          import java.util.ArrayList;
+          import java.util.Locale;
+          import org.json.JSONObject;
+
+          /**
+           * The ECHO-1 chat panel that opens over your other apps (hold Home, the widget, the bubble).
+           * It shows quick.html, the same chat panel as the chibi chat inside the app, and answers right there.
+           * This class only gives the page what a web page cannot do: listen with the microphone, open apps, set alarms.
+           */
+          public class AssistActivity extends Activity implements RecognitionListener {
+              private static final int REQ_MIC = 7, REQ_DIALOG = 8, REQ_SCREEN = 9;
+
+              private WebView web;
+              private SpeechRecognizer rec;
+              private boolean listening = false, loaded = false, failed = false, jsReady = false, ttsReady = false;
+              private LinearLayout errorBox;
+              private FrameLayout rootView;
+              private Uri baseUri;
+              private String startUrl = "";
+              private TextToSpeech tts;
+              private String pendingSpeech = null, pendingLang = "en-US";
+              private float pendingRate = 1f;
+              private volatile boolean ready = false;
+              private final Runnable watch = new Runnable() { @Override public void run() { if (listening && !ready) { listening = false; nextEngine(); } } };   // an engine that never says ready is silent: try the next one
+              private int attempt = 0;   // 0 = Google's speech engine, 1 = the phone's default engine, 2 = the phone's own voice window
+              private String lang = "en-US";
+              private final Handler h = new Handler(Looper.getMainLooper());
+
+              @SuppressLint({ "SetJavaScriptEnabled", "AddJavascriptInterface" })
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+
+                  FrameLayout root = new FrameLayout(this);
+                  rootView = root;
+                  root.setBackgroundColor(Color.TRANSPARENT);
+                  web = new WebView(this);
+                  web.setBackgroundColor(Color.TRANSPARENT);
+                  web.setVerticalScrollBarEnabled(false);
+                  web.setHorizontalScrollBarEnabled(false);
+                  web.setAlpha(0f);
+                  WebSettings ws = web.getSettings();
+                  ws.setJavaScriptEnabled(true);
+                  ws.setDomStorageEnabled(true);   // same site storage as the app: same sign-in, same look
+                  ws.setMediaPlaybackRequiresUserGesture(false);
+                  // The panel only ever shows your own ECHO-1 site, so it never needs local files, content:// links or insecure sub-resources.
+                  ws.setAllowFileAccess(false);
+                  ws.setAllowContentAccess(false);
+                  ws.setAllowFileAccessFromFileURLs(false);
+                  ws.setAllowUniversalAccessFromFileURLs(false);
+                  ws.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+                  ws.setSupportMultipleWindows(false);
+                  ws.setJavaScriptCanOpenWindowsAutomatically(false);
+                  web.addJavascriptInterface(new Bridge(), "EchoNative");
+                  final String base = baseUrl();
+                  try { baseUri = Uri.parse(base); } catch (Exception ignored) { baseUri = null; }
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) { if (r.isForMainFrame()) fail("Can't reach ECHO-1. Check your internet and try again."); }
+                      @Override public void onReceivedHttpError(WebView v, WebResourceRequest r, WebResourceResponse res) { if (r.isForMainFrame() && res.getStatusCode() >= 400) fail("ECHO-1 isn't answering right now (error " + res.getStatusCode() + "). Try again in a moment."); }
+                      @Override public void onReceivedSslError(WebView v, SslErrorHandler handler, SslError error) { handler.cancel(); fail("The secure connection to ECHO-1 failed."); }
+                      @Override public void onPageFinished(WebView v, String u) { if (!failed) { loaded = true; web.animate().alpha(1f).setDuration(120).start(); } }
+                      @Override public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
+                          String u = r.getUrl().toString();
+                          if (sameOrigin(u)) return false;     // only pages of your own site stay in the panel
+                          openUri(u, "");                      // everything else goes to the browser or the right app (and only safe kinds of link)
+                          return true;
+                      }
+                  });
+                  root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  setContentView(root);
+
+                  if (base.length() < 8 || baseUri == null) { fail("ECHO-1's address isn't set up in this app. Open ECHO-1 once first."); return; }
+                  loadPanel(getIntent());
+              }
+
+              private static String cleanMode(String m) {
+                  if (m == null) return "voice";
+                  String c = m.replaceAll("[^a-z]", "");
+                  return (c.equals("voice") || c.equals("text")) ? c : "voice";   // the page address never takes anything else from outside
+              }
+
+              private void loadPanel(Intent in) {
+                  String mode = cleanMode(in != null ? in.getStringExtra("mode") : null);
+                  startUrl = baseUrl() + "/quick.html?from=android&mode=" + mode;
+                  failed = false; loaded = false; jsReady = false;
+                  if (errorBox != null) errorBox.setVisibility(View.GONE);
+                  web.setAlpha(0f);
+                  web.loadUrl(startUrl);
+                  // if the page (or its script) has not started after a while, show a clear message instead of a blank screen
+                  h.postDelayed(new Runnable() { @Override public void run() { if (!jsReady && !failed) fail("ECHO-1 is taking too long to load. Check your internet and try again."); } }, 12000);
+              }
+
+              /** True only for pages on exactly the same scheme, host and port as your ECHO-1 site. */
+              private boolean sameOrigin(String u) {
+                  try {
+                      if (baseUri == null || u == null) return false;
+                      Uri a = Uri.parse(u);
+                      if (a.getScheme() == null || a.getHost() == null || baseUri.getHost() == null) return false;
+                      return a.getScheme().equalsIgnoreCase(baseUri.getScheme())
+                          && a.getHost().equalsIgnoreCase(baseUri.getHost())
+                          && portOf(a) == portOf(baseUri);
+                  } catch (Exception e) { return false; }
+              }
+
+              private static int portOf(Uri u) {
+                  int p = u.getPort();
+                  if (p != -1) return p;
+                  return "http".equalsIgnoreCase(u.getScheme()) ? 80 : 443;
+              }
+
+              /** The bridge only obeys the page it was made for: your own site, loaded at the top level. */
+              private boolean trusted() {
+                  try { return web != null && sameOrigin(web.getUrl()); } catch (Exception e) { return false; }
+              }
+
+              /** The address of your ECHO-1 site: from the app's own config, or from the bubble's saved address. */
+              private String baseUrl() {
+                  String u = "";
+                  try {
+                      InputStream in = getAssets().open("capacitor.config.json");
+                      BufferedReader r = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+                      StringBuilder sb = new StringBuilder(); String line;
+                      while ((line = r.readLine()) != null) sb.append(line).append('\n');
+                      r.close();
+                      u = new JSONObject(sb.toString()).getJSONObject("server").optString("url", "");
+                  } catch (Exception ignored) { }
+                  if (u == null || u.length() < 8) {
+                      try { u = getSharedPreferences("echo_bubble_prefs", MODE_PRIVATE).getString("base", ""); } catch (Exception ignored) { }
+                  }
+                  if (u == null) u = "";
+                  return u.replaceAll("/+$", "");
+              }
+
+              private void fail(final String msg) {
+                  if (failed) return;
+                  failed = true;
+                  h.post(new Runnable() { @Override public void run() { showError(msg); } });
+              }
+
+              /** A clear message with buttons, instead of a blank screen. Tapping outside the card closes it. */
+              private void showError(String msg) {
+                  if (isFinishing() || rootView == null) return;
+                  if (web != null) web.setAlpha(0f);
+                  if (errorBox == null) {
+                      errorBox = new LinearLayout(this);
+                      errorBox.setOrientation(LinearLayout.VERTICAL);
+                      errorBox.setPadding(dp(18), dp(16), dp(18), dp(14));
+                      errorBox.setBackgroundColor(Color.parseColor("#F00A0618"));
+                      FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
+                      lp.setMargins(dp(8), dp(40), dp(8), 0);
+                      rootView.addView(errorBox, lp);
+                      rootView.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { finish(); } });
+                  }
+                  errorBox.removeAllViews();
+                  errorBox.setVisibility(View.VISIBLE);
+                  TextView t = new TextView(this);
+                  t.setText(msg);
+                  t.setTextColor(Color.WHITE);
+                  t.setTextSize(15);
+                  errorBox.addView(t);
+                  LinearLayout row = new LinearLayout(this);
+                  row.setOrientation(LinearLayout.HORIZONTAL);
+                  row.setGravity(Gravity.END);
+                  row.setPadding(0, dp(12), 0, 0);
+                  Button retry = new Button(this); retry.setText("Try again");
+                  retry.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { loadPanel(getIntent()); } });
+                  Button open = new Button(this); open.setText("Open ECHO-1");
+                  open.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) {
+                      try { startActivity(new Intent(AssistActivity.this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)); } catch (Exception ignored) { }
+                      finish();
+                  } });
+                  Button close = new Button(this); close.setText("Close");
+                  close.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { finish(); } });
+                  row.addView(close); row.addView(open); row.addView(retry);
+                  errorBox.addView(row);
+              }
+
+              private int dp(int v) { return Math.round(v * getResources().getDisplayMetrics().density); }
+
+              private void js(final String code) {
+                  h.post(new Runnable() { @Override public void run() { try { if (web != null) web.evaluateJavascript(code, null); } catch (Exception ignored) { } } });
+              }
+
+              private void event(String t, String x) {
+                  try {
+                      JSONObject o = new JSONObject();
+                      o.put("t", t);
+                      if (x != null) o.put("x", x);
+                      js("window.EchoNativeEvent&&EchoNativeEvent(" + o.toString() + ")");
+                  } catch (Exception ignored) { }
+              }
+
+              /** Opens a link or app screen. Only ordinary, safe kinds of address are allowed. */
+              private void openUri(String uri, String fallback) {
+                  try {
+                      String s = uri == null ? "" : uri.trim();
+                      String lower = s.toLowerCase(Locale.ROOT);
+                      if (!(lower.startsWith("https:") || lower.startsWith("http:") || lower.startsWith("tel:") || lower.startsWith("sms:") || lower.startsWith("smsto:")
+                          || lower.startsWith("mailto:") || lower.startsWith("geo:") || lower.startsWith("market:"))) return;
+                      try {
+                          startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(s)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                      } catch (ActivityNotFoundException e) {
+                          String fb = fallback == null ? "" : fallback.trim();
+                          if (fb.toLowerCase(Locale.ROOT).startsWith("http")) startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(fb)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                      }
+                  } catch (Exception ignored) { }
+              }
+
+              private void openPackage(String pkg, String webFallback) {
+                  try {
+                      Intent li = getPackageManager().getLaunchIntentForPackage(pkg);
+                      if (li != null) { li.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(li); return; }
+                  } catch (Exception ignored) { }
+                  if (webFallback != null && webFallback.length() > 0) openUri(webFallback, "");
+              }
+
+              /** What the page can ask the phone to do. */
+              public class Bridge {
+                  @JavascriptInterface public void ready() { jsReady = true; }
+
+                  @JavascriptInterface public void listen(final String l) {
+                      h.post(new Runnable() { @Override public void run() { if (!trusted()) return; lang = (l == null || !l.matches("[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})?")) ? "en-US" : l.replace('_', '-'); attempt = 0; stopSpeaking(); startListening(); } });
+                  }
+
+                  @JavascriptInterface public void stopListen() {
+                      h.post(new Runnable() { @Override public void run() { stopListening(); } });
+                  }
+
+                  @JavascriptInterface public void open(final String uri, final String fallback) {
+                      h.post(new Runnable() { @Override public void run() { if (!trusted()) return; openUri(uri, fallback); finish(); } });
+                  }
+
+                  @JavascriptInterface public void openApp(final String app) {
+                      h.post(new Runnable() {
+                          @Override public void run() {
+                              if (!trusted()) return;
+                              String a = app == null ? "" : app;
+                              if (a.equals("phone")) { try { startActivity(new Intent(Intent.ACTION_DIAL).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); } catch (Exception ignored) { } }
+                              else if (a.equals("messages")) openUri("sms:", "");
+                              else if (a.equals("whatsapp")) openPackage("com.whatsapp", "https://wa.me/");
+                              else if (a.equals("instagram")) openPackage("com.instagram.android", "https://www.instagram.com/");
+                              else if (a.equals("telegram")) openPackage("org.telegram.messenger", "https://t.me/");
+                              else if (a.equals("spotify")) openPackage("com.spotify.music", "https://open.spotify.com/");
+                              else if (a.equals("youtube")) openPackage("com.google.android.youtube", "https://www.youtube.com/");
+                              else if (a.equals("gmail")) openPackage("com.google.android.gm", "mailto:");
+                              else if (a.equals("calendar")) openPackage("com.google.android.calendar", "https://calendar.google.com/");
+                              else if (a.equals("maps")) openPackage("com.google.android.apps.maps", "https://www.google.com/maps");
+                              finish();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface public void alarm(final int hour, final int minute, final String label) {
+                      h.post(new Runnable() {
+                          @Override public void run() {
+                              if (!trusted() || hour < 0 || hour > 23 || minute < 0 || minute > 59) return;
+                              try {
+                                  startActivity(new Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, hour).putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                                      .putExtra(AlarmClock.EXTRA_MESSAGE, label == null ? "Alarm" : label).putExtra(AlarmClock.EXTRA_SKIP_UI, false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                                  finish();
+                              } catch (Exception e) { Toast.makeText(AssistActivity.this, "I couldn't open the Clock app.", Toast.LENGTH_SHORT).show(); }
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface public void timer(final int seconds, final String label) {
+                      h.post(new Runnable() {
+                          @Override public void run() {
+                              if (!trusted() || seconds < 1 || seconds > 86400) return;
+                              try {
+                                  startActivity(new Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, seconds)
+                                      .putExtra(AlarmClock.EXTRA_MESSAGE, label == null ? "Timer" : label).putExtra(AlarmClock.EXTRA_SKIP_UI, false).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                                  finish();
+                              } catch (Exception e) { Toast.makeText(AssistActivity.this, "I couldn't open the Clock app.", Toast.LENGTH_SHORT).show(); }
+                          }
+                      });
+                  }
+
+                  /** For things only the full app can do (music, notes, weather ...): open it with the same question. */
+                  @JavascriptInterface public void handoff(final String q) {
+                      h.post(new Runnable() {
+                          @Override public void run() {
+                              if (!trusted()) return;
+                              Intent i = new Intent(AssistActivity.this, MainActivity.class)
+                                  .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                              if (q != null && q.trim().length() > 0) i.putExtra("echo_query", q.trim().substring(0, Math.min(q.trim().length(), 2000)));
+                              startActivity(i);
+                              finish();
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface public void state(String st) { BubbleService.state(st == null ? "idle" : st.replaceAll("[^a-z]", "")); }
+
+                  /** Speak a reply with Android's own voice (the web view's built-in speech is unreliable). */
+                  @JavascriptInterface public void speak(final String text, final String l, final float rate) {
+                      h.post(new Runnable() { @Override public void run() { if (trusted()) speakNative(text, l, rate); } });
+                  }
+
+                  @JavascriptInterface public void stopSpeak() {
+                      h.post(new Runnable() { @Override public void run() { stopSpeaking(); } });
+                  }
+
+                  @JavascriptInterface public void react(String text) { BubbleService.react(text, false); }
+
+                          @JavascriptInterface public boolean screenActive() { return ScreenService.active; }
+                  
+                          @JavascriptInterface public void screenStart() {
+                              h.post(new Runnable() { @Override public void run() {
+                                  if (!trusted()) return;
+                                  if (ScreenService.active) { event("screenOn", null); return; }
+                                  try {
+                                      android.media.projection.MediaProjectionManager m = (android.media.projection.MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+                                      startActivityForResult(m.createScreenCaptureIntent(), REQ_SCREEN);
+                                  } catch (Exception e) { event("screenErr", "This phone can't share its screen with ECHO-1."); }
+                              } });
+                          }
+                  
+                          @JavascriptInterface public void screenStop() {
+                              h.post(new Runnable() { @Override public void run() { try { startService(new Intent(AssistActivity.this, ScreenService.class).setAction("stop")); } catch (Exception ignored) { } } });
+                          }
+                  
+                          /** Takes one picture of the screen (the panel hides for a moment so it isn't in the picture) and sends it to the page. */
+                          @JavascriptInterface public void screenshot() {
+                              h.post(new Runnable() { @Override public void run() {
+                                  if (!trusted()) return;
+                                  if (!ScreenService.active) { js("window.__echoShot&&window.__echoShot('')"); return; }
+                                  rootView.setVisibility(View.INVISIBLE);
+                                  h.postDelayed(new Runnable() { @Override public void run() {
+                                      new Thread(new Runnable() { @Override public void run() {
+                                          final String b = ScreenService.grab();
+                                          h.post(new Runnable() { @Override public void run() {
+                                              rootView.setVisibility(View.VISIBLE);
+                                              js("window.__echoShot&&window.__echoShot('" + (b == null ? "" : b) + "')");
+                                          } });
+                                      } }).start();
+                                  } }, 350);
+                              } });
+                          }
+                  
+                  @JavascriptInterface public void close() {
+                      h.post(new Runnable() { @Override public void run() { finish(); } });
+                  }
+              }
+
+              // ---------------- spoken replies ----------------
+
+              private void speakNative(String text, String l, float rate) {
+                  if (text == null || text.trim().length() == 0 || isFinishing()) return;
+                  stopListening();
+                  pendingSpeech = text.length() > 600 ? text.substring(0, 600) : text;
+                  pendingLang = (l == null || l.length() < 2) ? "en-US" : l;
+                  pendingRate = (rate < 0.5f || rate > 2f) ? 1f : rate;
+                  if (tts == null) {
+                      tts = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+                          @Override public void onInit(int status) {
+                              ttsReady = (status == TextToSpeech.SUCCESS);
+                              if (ttsReady) {
+                                  tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                                      @Override public void onStart(String id) { event("speakStart", null); }
+                                      @Override public void onDone(String id) { event("speakEnd", null); }
+                                      @Override public void onError(String id) { event("speakEnd", null); }
+                                  });
+                                  h.post(new Runnable() { @Override public void run() { playPending(); } });
+                              } else { event("speakEnd", null); }
+                          }
+                      });
+                      return;
+                  }
+                  if (ttsReady) playPending();
+              }
+
+              private void playPending() {
+                  if (tts == null || !ttsReady || pendingSpeech == null) return;
+                  try {
+                      String[] p = pendingLang.split("-");
+                      Locale loc = p.length > 1 ? new Locale(p[0], p[1]) : new Locale(p[0]);
+                      int r = tts.isLanguageAvailable(loc);
+                      if (r >= TextToSpeech.LANG_AVAILABLE) tts.setLanguage(loc);
+                      tts.setSpeechRate(pendingRate);
+                      tts.speak(pendingSpeech, TextToSpeech.QUEUE_FLUSH, null, "echo-reply");
+                  } catch (Exception e) { event("speakEnd", null); }
+                  pendingSpeech = null;
+              }
+
+              private void stopSpeaking() {
+                  pendingSpeech = null;
+                  try { if (tts != null) tts.stop(); } catch (Exception ignored) { }
+              }
+
+              // ---------------- voice ----------------
+
+              private void startListening() {
+                  if (isFinishing() || listening) return;
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, REQ_MIC);
+                      return;
+                  }
+                  if (attempt >= 2 || !SpeechRecognizer.isRecognitionAvailable(this)) { openVoiceWindow(); return; }
+                  try {
+                      makeRecognizer(attempt == 1);
+                      Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                          .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                          .putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+                          .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                          .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+                      listening = true;
+                      BubbleService.state("listening");
+                      event("listening", null);
+                      ready = false;
+                      h.removeCallbacks(watch); h.postDelayed(watch, 3500);
+                      rec.startListening(i);
+                  } catch (Exception e) {
+                      listening = false;
+                      nextEngine();
+                  }
+              }
+
+              private void destroyRecognizer() {
+                  if (rec != null) {
+                      try { rec.cancel(); } catch (Exception ignored) { }
+                      try { rec.destroy(); } catch (Exception ignored) { }
+                      rec = null;
+                  }
+              }
+
+              private void makeRecognizer(boolean useDefault) {
+                  destroyRecognizer();   // a fresh one every time avoids "too many requests" (code 10)
+                  if (!useDefault) {
+                      try {
+                          // If ECHO-1 is the assistant, Android's default speech engine can point back at ECHO-1. Ask Google's directly.
+                          rec = SpeechRecognizer.createSpeechRecognizer(this,
+                              new ComponentName("com.google.android.googlequicksearchbox", "com.google.android.voicesearch.serviceapi.GoogleRecognitionService"));
+                      } catch (Exception ignored) { rec = null; }
+                  }
+                  if (rec == null) rec = SpeechRecognizer.createSpeechRecognizer(this);
+                  rec.setRecognitionListener(this);
+              }
+
+              private void nextEngine() {
+                  h.removeCallbacks(watch);
+                  attempt++;
+                  destroyRecognizer();
+                  if (attempt >= 2) { openVoiceWindow(); return; }
+                  h.postDelayed(new Runnable() { @Override public void run() { startListening(); } }, 700);
+              }
+
+              /** Last resort that works on almost every phone: the phone's own voice window. */
+              private void openVoiceWindow() {
+                  try {
+                      Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                          .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                          .putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
+                          .putExtra(RecognizerIntent.EXTRA_PROMPT, "Say it to ECHO-1");
+                      startActivityForResult(i, REQ_DIALOG);
+                  } catch (Exception e) {
+                      event("err", "Voice isn't available on this phone. Type instead.");
+                  }
+              }
+
+              private void stopListening() {
+                  h.removeCallbacks(watch);
+                  boolean was = listening;
+                  listening = false;
+                  try { if (rec != null) rec.stopListening(); } catch (Exception ignored) { }
+                  if (was) { BubbleService.state("idle"); event("stopped", null); }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+                  super.onRequestPermissionsResult(code, perms, results);
+                  if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) startListening();
+                  else event("err", "Mic permission is off. Type instead, or allow it in Settings.");
+              }
+
+              @Override
+              protected void onActivityResult(int code, int result, Intent data) {
+                  super.onActivityResult(code, result, data);
+                      if (code == REQ_SCREEN) {
+                          if (result == RESULT_OK && data != null) {
+                              try {
+                                  Intent si = new Intent(this, ScreenService.class).putExtra("code", result).putExtra("data", data);
+                                  if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(si); else startService(si);
+                                  final int[] tries = { 0 };
+                                  h.postDelayed(new Runnable() { @Override public void run() {
+                                      if (ScreenService.active) event("screenOn", null);
+                                      else if (++tries[0] < 12) h.postDelayed(this, 250);
+                                      else event("screenErr", "Screen sharing didn't start. Try again.");
+                                  } }, 250);
+                              } catch (Exception e) { event("screenErr", "Screen sharing didn't start. Try again."); }
+                          } else event("screenErr", "Screen sharing was not allowed.");
+                          return;
+                      }
+                      if (code != REQ_DIALOG) return;
+                  if (code != REQ_DIALOG) return;
+                  ArrayList<String> list = (result == RESULT_OK && data != null) ? data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS) : null;
+                  if (list != null && !list.isEmpty()) event("final", list.get(0));
+                  else event("err", "Didn't catch that. Tap the mic to try again.");
+              }
+
+              @Override
+              public void onResults(Bundle results) {
+                  h.removeCallbacks(watch);
+                  listening = false;
+                  BubbleService.state("idle");
+                  ArrayList<String> list = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                  if (list != null && !list.isEmpty()) event("final", list.get(0));
+                  else event("err", "Didn't catch that. Tap the mic to try again.");
+              }
+
+              @Override
+              public void onPartialResults(Bundle partial) {
+                  ArrayList<String> list = partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                  if (list != null && !list.isEmpty()) event("partial", list.get(0));
+              }
+
+              @Override
+              public void onError(int error) {
+                  h.removeCallbacks(watch);
+                  listening = false;
+                  BubbleService.state("idle");
+                  if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) { event("stopped", null); return; }
+                  if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) { event("err", "Mic permission is off. Type instead."); return; }
+                  if (error == SpeechRecognizer.ERROR_NETWORK || error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT) { event("err", "No internet for voice. Type instead."); return; }
+                  if (error == SpeechRecognizer.ERROR_AUDIO) { event("err", "The microphone is busy. Close other apps using it and try again."); return; }
+                  nextEngine();   // engine problems (codes 4, 5, 8, 10, 11, 12, 13 ...): switch engine instead of giving up
+              }
+
+              @Override public void onReadyForSpeech(Bundle p) { ready = true; h.removeCallbacks(watch); }
+              @Override public void onBeginningOfSpeech() { ready = true; h.removeCallbacks(watch); }
+              @Override public void onRmsChanged(float rms) { }
+              @Override public void onBufferReceived(byte[] buf) { }
+              @Override public void onEndOfSpeech() { }
+              @Override public void onEvent(int type, Bundle p) { }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  setIntent(intent);
+                  // opened again while already showing (second hold of Home, widget tap): start over
+                  if (failed || web == null) { loadPanel(intent); return; }
+                  stopSpeaking();
+                  if ("voice".equals(cleanMode(intent != null ? intent.getStringExtra("mode") : null)) && jsReady) { attempt = 0; startListening(); }
+              }
+
+              @Override
+              protected void onStop() {
+                  super.onStop();
+                  // leaving the panel (another app opened) must never leave the microphone or the voice running
+                  stopListening();
+                  stopSpeaking();
+              }
+
+              @Override
+              public void onBackPressed() {
+                  finish();
+              }
+
+              @Override
+              protected void onDestroy() {
+                  super.onDestroy();
+                  h.removeCallbacksAndMessages(null);
+                  destroyRecognizer();
+                  try { if (tts != null) { tts.stop(); tts.shutdown(); } } catch (Exception ignored) { }
+                  tts = null;
+                  if (web != null) { try { ((ViewGroup) web.getParent()).removeView(web); } catch (Exception ignored) { } web.destroy(); web = null; }
+                  BubbleService.state("idle");
+              }
+          }
+          EOF
+          cat > native/EchoAssistService.java <<'EOF'
+          package com.echo1.app;
+
+          import android.service.voice.VoiceInteractionService;
+
+          /** Makes ECHO-1 show up under Settings > Default apps > Digital assistant app. */
+          public class EchoAssistService extends VoiceInteractionService { }
+          EOF
+          cat > native/EchoSessionService.java <<'EOF'
+          package com.echo1.app;
+
+          import android.os.Bundle;
+          import android.service.voice.VoiceInteractionSession;
+          import android.service.voice.VoiceInteractionSessionService;
+
+          public class EchoSessionService extends VoiceInteractionSessionService {
+              @Override
+              public VoiceInteractionSession onNewSession(Bundle args) {
+                  return new EchoSession(this);
+              }
+          }
+          EOF
+          cat > native/EchoSession.java <<'EOF'
+          package com.echo1.app;
+
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.service.voice.VoiceInteractionSession;
+
+          /** Runs when you hold Home (or the power button). Opens the ECHO-1 bubble. */
+          public class EchoSession extends VoiceInteractionSession {
+              public EchoSession(Context context) { super(context); }
+
+              @Override
+              public void onShow(Bundle args, int showFlags) {
+                  super.onShow(args, showFlags);
+                  Intent i = new Intent(getContext(), AssistActivity.class)
+                      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                  try { startAssistantActivity(i); }
+                  catch (Exception e) { try { getContext().startActivity(i); } catch (Exception ignored) { } }
+                  new Handler(Looper.getMainLooper()).postDelayed(this::hide, 400);
+              }
+          }
+          EOF
+          cat > native/EchoRecognitionService.java <<'EOF'
+          package com.echo1.app;
+
+          import android.content.Intent;
+          import android.speech.RecognitionService;
+          import android.speech.SpeechRecognizer;
+
+          /** Android wants every assistant to declare a recognition service. The bubble uses Google's speech engine instead. */
+          public class EchoRecognitionService extends RecognitionService {
+              @Override protected void onStartListening(Intent intent, Callback callback) {
+                  try { callback.error(SpeechRecognizer.ERROR_CLIENT); } catch (Exception ignored) { }
+              }
+              @Override protected void onCancel(Callback callback) { }
+              @Override protected void onStopListening(Callback callback) { }
+          }
+          EOF
+          cat > native/EchoWidget.java <<'EOF'
+          package com.echo1.app;
+
+          import android.app.PendingIntent;
+          import android.appwidget.AppWidgetManager;
+          import android.appwidget.AppWidgetProvider;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.widget.RemoteViews;
+
+          /** Home screen widget. Tap it to open the ECHO-1 bubble. */
+          public class EchoWidget extends AppWidgetProvider {
+              @Override
+              public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+                  Intent open = new Intent(ctx, AssistActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                  PendingIntent pi = PendingIntent.getActivity(ctx, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+                  for (int id : ids) {
+                      RemoteViews rv = new RemoteViews(ctx.getPackageName(), R.layout.echo_widget);
+                      rv.setOnClickPendingIntent(R.id.echo_widget_root, pi);
+                      mgr.updateAppWidget(id, rv);
+                  }
+              }
+          }
+          EOF
+          cat > native/EchoBarWidget.java <<'EOF'
+          package com.echo1.app;
+
+          import android.app.PendingIntent;
+          import android.appwidget.AppWidgetManager;
+          import android.appwidget.AppWidgetProvider;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.widget.RemoteViews;
+
+          /** Wide "Ask Echo" bar for the home screen. Tap the bar to type, tap the mic to talk. */
+          public class EchoBarWidget extends AppWidgetProvider {
+              @Override
+              public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+                  PendingIntent type = open(ctx, "text", 11);
+                  PendingIntent talk = open(ctx, "voice", 12);
+                  for (int id : ids) {
+                      RemoteViews rv = new RemoteViews(ctx.getPackageName(), R.layout.echo_bar_widget);
+                      rv.setOnClickPendingIntent(R.id.echo_bar_root, type);
+                      rv.setOnClickPendingIntent(R.id.echo_bar_text, type);
+                      rv.setOnClickPendingIntent(R.id.echo_bar_mic, talk);
+                      mgr.updateAppWidget(id, rv);
+                  }
+              }
+
+              private static PendingIntent open(Context ctx, String mode, int code) {
+                  Intent i = new Intent(ctx, AssistActivity.class)
+                      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                      .putExtra("mode", mode);
+                  return PendingIntent.getActivity(ctx, code, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+              }
+          }
+          EOF
+          cat > native/ScreenService.java <<'EOF'
+          package com.echo1.app;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.pm.ServiceInfo;
+          import android.graphics.Bitmap;
+          import android.graphics.PixelFormat;
+          import android.hardware.display.DisplayManager;
+          import android.hardware.display.VirtualDisplay;
+          import android.media.Image;
+          import android.media.ImageReader;
+          import android.media.projection.MediaProjection;
+          import android.media.projection.MediaProjectionManager;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.IBinder;
+          import android.util.Base64;
+          import android.util.DisplayMetrics;
+          import java.io.ByteArrayOutputStream;
+          import java.nio.ByteBuffer;
+
+          /** Lets ECHO-1 see your screen, only after you allow it. Holds the screen-capture permission and hands out one small JPEG when asked. */
+          public class ScreenService extends Service {
+              static volatile boolean active = false;
+              private static volatile ScreenService inst;
+              private MediaProjection mp;
+              private VirtualDisplay vd;
+              private ImageReader ir;
+              private HandlerThread ht;
+              private int w, h;
+              private volatile Bitmap last;
+              private volatile boolean want = false;
+              private volatile long lastConv = 0;
+              private final Object lock = new Object();
+
+              @Override public IBinder onBind(Intent i) { return null; }
+
+              @Override
+              public int onStartCommand(Intent in, int flags, int id) {
+                  if (in != null && "stop".equals(in.getAction())) { shutdown(); return START_NOT_STICKY; }
+                  try {
+                      NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                      String ch = "echo_screen";
+                      if (android.os.Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(ch) == null)
+                          nm.createNotificationChannel(new NotificationChannel(ch, "ECHO-1 screen sharing", NotificationManager.IMPORTANCE_LOW));
+                      PendingIntent stop = PendingIntent.getService(this, 3, new Intent(this, ScreenService.class).setAction("stop"), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                      Notification.Builder nb = android.os.Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, ch) : new Notification.Builder(this);
+                      nb.setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("ECHO-1 can see your screen").setContentText("Tap to stop sharing").setContentIntent(stop).setOngoing(true);
+                      Notification n = nb.build();
+                      if (android.os.Build.VERSION.SDK_INT >= 29) startForeground(9, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+                      else startForeground(9, n);
+                      int code = in == null ? 0 : in.getIntExtra("code", 0);
+                      Intent data = in == null ? null : (Intent) in.getParcelableExtra("data");
+                      if (data == null) { shutdown(); return START_NOT_STICKY; }
+                      MediaProjectionManager m = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+                      mp = m.getMediaProjection(code, data);
+                      ht = new HandlerThread("echo-screen"); ht.start();
+                      Handler bg = new Handler(ht.getLooper());
+                      mp.registerCallback(new MediaProjection.Callback() { @Override public void onStop() { shutdown(); } }, bg);
+                      DisplayMetrics dm = getResources().getDisplayMetrics();
+                      float sc = Math.min(1f, 960f / Math.max(dm.widthPixels, dm.heightPixels));
+                      w = Math.max(2, Math.round(dm.widthPixels * sc)); h = Math.max(2, Math.round(dm.heightPixels * sc));
+                      ir = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2);
+                      ir.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
+                          @Override public void onImageAvailable(ImageReader r) {
+                              Image im = null;
+                              try {
+                                  im = r.acquireLatestImage();
+                                  if (im == null) return;
+                                  long now = System.currentTimeMillis();
+                                  if (!want && now - lastConv < 1500) return;   // while nobody asks, keep the work tiny
+                                  Image.Plane p = im.getPlanes()[0];
+                                  ByteBuffer buf = p.getBuffer();
+                                  int ps = p.getPixelStride(), rs = p.getRowStride();
+                                  Bitmap full = Bitmap.createBitmap(rs / ps, h, Bitmap.Config.ARGB_8888);
+                                  full.copyPixelsFromBuffer(buf);
+                                  Bitmap b = full.getWidth() == w ? full : Bitmap.createBitmap(full, 0, 0, w, h);
+                                  last = b; lastConv = now;
+                                  if (want) { want = false; synchronized (lock) { lock.notifyAll(); } }
+                              } catch (Exception ignored) {
+                              } finally { if (im != null) im.close(); }
+                          }
+                      }, bg);
+                      vd = mp.createVirtualDisplay("echo-screen", w, h, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, ir.getSurface(), null, bg);
+                      inst = this; active = true;
+                  } catch (Exception e) { shutdown(); }
+                  return START_NOT_STICKY;
+              }
+
+              /** One JPEG of the screen as base64, or null. Waits briefly for a fresh frame. */
+              static String grab() {
+                  ScreenService s = inst;
+                  if (s == null || !active) return null;
+                  try {
+                      synchronized (s.lock) { s.want = true; s.lock.wait(1400); }
+                      s.want = false;
+                      Bitmap b = s.last;
+                      if (b == null) return null;
+                      ByteArrayOutputStream o = new ByteArrayOutputStream();
+                      b.compress(Bitmap.CompressFormat.JPEG, 70, o);
+                      return Base64.encodeToString(o.toByteArray(), Base64.NO_WRAP);
+                  } catch (Exception e) { return null; }
+              }
+
+              private void shutdown() {
+                  active = false; inst = null;
+                  try { if (vd != null) vd.release(); } catch (Exception ignored) { }
+                  try { if (ir != null) ir.close(); } catch (Exception ignored) { }
+                  try { if (mp != null) mp.stop(); } catch (Exception ignored) { }
+                  try { if (ht != null) ht.quitSafely(); } catch (Exception ignored) { }
+                  vd = null; ir = null; mp = null; ht = null; last = null;
+                  try { stopForeground(true); } catch (Exception ignored) { }
+                  stopSelf();
+              }
+
+              @Override public void onDestroy() { active = false; inst = null; super.onDestroy(); }
+          }
+          EOF
+          cat > native/patch-android.js <<'EOF'
+          // Run after `cap add android`. Copies the native plugins in, registers them, adds the assistant bubble, and adds the permissions ECHO-1 needs. Safe to run again.
+          const fs = require("fs"), path = require("path");
+          const root = path.join(__dirname, "..", "android", "app", "src", "main");
+          const pkgDir = path.join(root, "java", "com", "echo1", "app");
+          if (!fs.existsSync(root)) { console.error("Run `npx cap add android` first."); process.exit(1); }
+          fs.mkdirSync(pkgDir, { recursive: true });
+          ["AlarmPlugin", "LauncherPlugin", "AssistPlugin", "AssistActivity", "EchoAssistService", "EchoSessionService", "EchoSession", "EchoRecognitionService", "EchoWidget", "EchoBarWidget", "BubbleService", "ScreenService"]
+            .forEach((f) => fs.copyFileSync(path.join(__dirname, f + ".java"), path.join(pkgDir, f + ".java")));
+          fs.writeFileSync(path.join(pkgDir, "MainActivity.java"), `package com.echo1.app;
+
+          import android.content.Intent;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(AlarmPlugin.class);
+                  registerPlugin(LauncherPlugin.class);
+                  registerPlugin(AssistPlugin.class);
+                  super.onCreate(savedInstanceState);
+                  takeAssist(getIntent(), false);
+              }
+
+              @Override
+              protected void onNewIntent(Intent intent) {
+                  super.onNewIntent(intent);
+                  setIntent(intent);
+                  takeAssist(intent, true);
+              }
+
+              // The assistant bubble sends what you said here. The web app picks it up and answers.
+              private void takeAssist(Intent i, boolean live) {
+                  if (i == null) return;
+                  String q = i.getStringExtra("echo_query");
+                  if (q == null || q.trim().isEmpty()) return;
+                  i.removeExtra("echo_query");
+                  AssistPlugin.pending = q.trim();
+                  if (live && getBridge() != null) getBridge().triggerDocumentJSEvent("echoassist");
+              }
+          }
+          `);
+
+          const resDir = path.join(root, "res");
+          fs.mkdirSync(path.join(resDir, "xml"), { recursive: true });
+          fs.mkdirSync(path.join(resDir, "values"), { recursive: true });
+          fs.writeFileSync(path.join(resDir, "xml", "echo_assistant.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:sessionService="com.echo1.app.EchoSessionService"
+              android:recognitionService="com.echo1.app.EchoRecognitionService"
+              android:supportsAssist="true"
+              android:supportsLaunchVoiceAssistFromKeyguard="true" />
+          `);
+          fs.writeFileSync(path.join(resDir, "xml", "echo_recognizer.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <recognition-service xmlns:android="http://schemas.android.com/apk/res/android" />
+          `);
+          fs.writeFileSync(path.join(resDir, "values", "echo_styles.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="EchoBubble" parent="@android:style/Theme.Translucent.NoTitleBar">
+                  <item name="android:windowIsTranslucent">true</item>
+                  <item name="android:windowBackground">@android:color/transparent</item>
+                  <item name="android:windowAnimationStyle">@android:style/Animation.Activity</item>
+              </style>
+          </resources>
+          `);
+
+          fs.mkdirSync(path.join(resDir, "layout"), { recursive: true });
+          fs.mkdirSync(path.join(resDir, "drawable"), { recursive: true });
+          fs.writeFileSync(path.join(resDir, "drawable", "echo_widget_bg.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+              <solid android:color="#FF14101F" />
+              <stroke android:width="3dp" android:color="#FFC8F43A" />
+          </shape>
+          `);
+          fs.mkdirSync(path.join(resDir, "drawable-nodpi"), { recursive: true });
+          const iconPng = path.join(resDir, "drawable-nodpi", "echo_widget_icon.png");
+          if (!fs.existsSync(iconPng)) fs.writeFileSync(iconPng, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR4nGP0tl/wnwEPYMInOXwUAAA9CQI5YwtZhAAAAABJRU5ErkJggg==", "base64"));   // placeholder, replaced by make-icons.py with your real icon
+          fs.writeFileSync(path.join(resDir, "layout", "echo_widget.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/echo_widget_root"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:padding="4dp">
+              <ImageView
+                  android:layout_width="match_parent"
+                  android:layout_height="match_parent"
+                  android:padding="3dp"
+                  android:scaleType="fitCenter"
+                  android:src="@drawable/echo_widget_icon"
+                  android:contentDescription="Ask ECHO-1"
+                  android:background="@drawable/echo_widget_bg" />
+          </FrameLayout>
+          `);
+          fs.writeFileSync(path.join(resDir, "xml", "echo_widget_info.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="56dp"
+              android:minHeight="56dp"
+              android:targetCellWidth="1"
+              android:targetCellHeight="1"
+              android:updatePeriodMillis="0"
+              android:resizeMode="none"
+              android:widgetCategory="home_screen"
+              android:initialLayout="@layout/echo_widget" />
+          `);
+
+          fs.writeFileSync(path.join(resDir, "drawable", "echo_bar_bg.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#F214101F" />
+              <corners android:radius="28dp" />
+              <stroke android:width="1.5dp" android:color="#55C8F43A" />
+          </shape>
+          `);
+          fs.writeFileSync(path.join(resDir, "layout", "echo_bar_widget.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/echo_bar_root"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="horizontal"
+              android:gravity="center_vertical"
+              android:paddingLeft="12dp"
+              android:paddingRight="8dp"
+              android:background="@drawable/echo_bar_bg">
+              <ImageView
+                  android:layout_width="30dp"
+                  android:layout_height="30dp"
+                  android:scaleType="fitCenter"
+                  android:src="@drawable/echo_widget_icon"
+                  android:contentDescription="ECHO-1" />
+              <TextView
+                  android:id="@+id/echo_bar_text"
+                  android:layout_width="0dp"
+                  android:layout_height="wrap_content"
+                  android:layout_weight="1"
+                  android:paddingLeft="10dp"
+                  android:text="Ask Echo\u2026"
+                  android:textColor="#B3F4F1FF"
+                  android:textSize="15sp"
+                  android:maxLines="1" />
+              <TextView
+                  android:id="@+id/echo_bar_mic"
+                  android:layout_width="40dp"
+                  android:layout_height="40dp"
+                  android:gravity="center"
+                  android:text="\uD83C\uDF99"
+                  android:textSize="20sp"
+                  android:contentDescription="Talk to Echo" />
+          </LinearLayout>
+          `);
+          fs.writeFileSync(path.join(resDir, "xml", "echo_bar_widget_info.xml"), `<?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="180dp"
+              android:minHeight="48dp"
+              android:targetCellWidth="4"
+              android:targetCellHeight="1"
+              android:updatePeriodMillis="0"
+              android:resizeMode="horizontal"
+              android:widgetCategory="home_screen"
+              android:initialLayout="@layout/echo_bar_widget" />
+          `);
+          const mf = path.join(root, "AndroidManifest.xml");
+          let x = fs.readFileSync(mf, "utf8");
+          ["android.permission.INTERNET", "android.permission.RECORD_AUDIO", "android.permission.MODIFY_AUDIO_SETTINGS",
+           "android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION",
+           "android.permission.POST_NOTIFICATIONS", "android.permission.VIBRATE", "com.android.alarm.permission.SET_ALARM",
+           "android.permission.SYSTEM_ALERT_WINDOW", "android.permission.FOREGROUND_SERVICE", "android.permission.FOREGROUND_SERVICE_SPECIAL_USE", "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+          ].forEach((p) => { if (!x.includes('"' + p + '"')) x = x.replace("</manifest>", '    <uses-permission android:name="' + p + '" />\n</manifest>'); });
+          // Lets the app see and open other installed apps, and find the speech engine (Android 11+ hides them otherwise).
+          if (!x.includes("<queries>")) x = x.replace("<application", '<queries>\n        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent>\n        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>\n        <intent><action android:name="android.speech.RecognitionService" /></intent>\n    </queries>\n\n    <application');
+          // Spoken replies need the text-to-speech engine to be visible, and the panel asks Google's speech app for listening.
+          if (!x.includes("TTS_SERVICE")) x = x.replace("</queries>", '    <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>\n        <package android:name="com.google.android.googlequicksearchbox" />\n    </queries>');
+          // The assistant: shows ECHO-1 in Settings > Digital assistant app, and opens the bubble.
+          if (!x.includes(".EchoAssistService")) {
+            x = x.replace("</application>", `
+                  <service android:name=".EchoAssistService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true">
+                      <meta-data android:name="android.voice_interaction" android:resource="@xml/echo_assistant" />
+                      <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
+                  </service>
+                  <service android:name=".EchoSessionService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true" />
+                  <service android:name=".EchoRecognitionService" android:exported="true">
+                      <intent-filter><action android:name="android.speech.RecognitionService" /><category android:name="android.intent.category.DEFAULT" /></intent-filter>
+                      <meta-data android:name="android.speech" android:resource="@xml/echo_recognizer" />
+                  </service>
+                  <activity android:name=".AssistActivity" android:theme="@style/EchoBubble" android:exported="true" android:excludeFromRecents="true"
+                      android:launchMode="singleTask" android:taskAffinity="" android:windowSoftInputMode="adjustResize" />
+                  <receiver android:name=".EchoWidget" android:exported="true">
+                      <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+                      <meta-data android:name="android.appwidget.provider" android:resource="@xml/echo_widget_info" />
+                  </receiver>
+                  <service android:name=".BubbleService" android:exported="false" android:foregroundServiceType="specialUse">
+                      <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Floating assistant shortcut" />
+                  </service>
+              </application>`);
+          }
+          // The wide "Ask Echo" bar widget (added separately so it also lands on projects patched before it existed).
+          if (!x.includes(".EchoBarWidget")) {
+            x = x.replace("</application>", `
+                  <receiver android:name=".EchoBarWidget" android:exported="true">
+                      <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+                      <meta-data android:name="android.appwidget.provider" android:resource="@xml/echo_bar_widget_info" />
+                  </receiver>
+              </application>`);
+          }
+          // Screen sharing (only after you allow it): lets the bubble panel see the screen.
+          if (!x.includes(".ScreenService")) {
+            x = x.replace("</application>", `
+                  <service android:name=".ScreenService" android:exported="false" android:foregroundServiceType="mediaProjection" />
+              </application>`);
+          }
+          fs.writeFileSync(mf, x);
+          console.log("Android project patched: alarm, launcher, assistant bubble + permissions.");
+          EOF
+          cat > native/make-icons.py <<'EOF'
+          # Builds the Android launcher icons from the ECHO-1 icons on your website. Usage: python3 make-icons.py https://your-site
+          import io, os, sys, urllib.request
+          from PIL import Image, ImageDraw
+
+          base = sys.argv[1].rstrip("/")
+          res = os.path.join("android", "app", "src", "main", "res")
+
+          def get(name):
+              with urllib.request.urlopen(base + "/" + name, timeout=30) as r:
+                  return Image.open(io.BytesIO(r.read())).convert("RGBA")
+
+          icon, mask = get("icon-512.png"), get("icon-maskable-512.png")
+          bg = icon.getpixel((2, 2))[:3]
+          hexbg = "#%02X%02X%02X" % bg
+
+          legacy = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          for d, px in legacy.items():
+              out = os.path.join(res, "mipmap-" + d)
+              os.makedirs(out, exist_ok=True)
+              sq = icon.resize((px, px), Image.LANCZOS)
+              sq.save(os.path.join(out, "ic_launcher.png"))
+              m = Image.new("L", (px * 4, px * 4), 0)
+              ImageDraw.Draw(m).ellipse((0, 0, px * 4 - 1, px * 4 - 1), fill=255)
+              rd = sq.copy(); rd.putalpha(m.resize((px, px), Image.LANCZOS))
+              rd.save(os.path.join(out, "ic_launcher_round.png"))
+              fg = mask.resize((px * 9 // 4, px * 9 // 4), Image.LANCZOS)      # adaptive icon layer is 108dp = 2.25 x the 48dp icon
+              fg.save(os.path.join(out, "ic_launcher_foreground.png"))
+
+          os.makedirs(os.path.join(res, "values"), exist_ok=True)
+          open(os.path.join(res, "values", "ic_launcher_background.xml"), "w").write(
+              '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">' + hexbg + '</color>\n</resources>\n')
+          os.makedirs(os.path.join(res, "mipmap-anydpi-v26"), exist_ok=True)
+          xml = ('<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
+                 '    <background android:drawable="@color/ic_launcher_background"/>\n    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n</adaptive-icon>\n')
+          for n in ("ic_launcher.xml", "ic_launcher_round.xml"):
+              open(os.path.join(res, "mipmap-anydpi-v26", n), "w").write(xml)
+          # Round icon for the home screen widget
+          wd = os.path.join(res, "drawable-nodpi"); os.makedirs(wd, exist_ok=True)
+          m0 = int(icon.size[0] * 0.0625)
+          wi = icon.crop((m0, m0, icon.size[0] - m0, icon.size[0] - m0)).resize((256, 256), Image.LANCZOS)
+          wm = Image.new("L", (1024, 1024), 0); ImageDraw.Draw(wm).ellipse((0, 0, 1023, 1023), fill=255)
+          wi.putalpha(wm.resize((256, 256), Image.LANCZOS)); wi.save(os.path.join(wd, "echo_widget_icon.png"))
+          print("ECHO-1 icons written, background", hexbg)
+          EOF
+      - name: Use the same signing key (so a new build installs over the old app)
+        env:
+          KS: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then mkdir -p ~/.android && echo "$KS" | base64 -d > ~/.android/debug.keystore && echo "Using saved signing key"; else echo "No saved key. Uninstall the old app before installing this one."; fi
+      - name: Build the Android app
+        working-directory: app
+        env:
+          ECHO_URL: ${{ inputs.url }}
+        run: |
+          npm install
+          npx cap add android
+          node native/patch-android.js
+          pip install --quiet pillow
+          python3 native/make-icons.py "$ECHO_URL" || echo "Icon step skipped, using the default icon"
+          npx cap sync android
+          sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"1.${{ github.run_number }}\"/" android/app/build.gradle || true
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ECHO-1-apk
+          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Publish the download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/android/app/build/outputs/apk/debug/app-debug.apk ECHO-1.apk
+          gh release create "v${{ github.run_number }}" ECHO-1.apk --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "ECHO-1 v${{ github.run_number }}" --notes "Install ECHO-1.apk on your Android phone." --latest
+          echo "Download link: https://github.com/${{ github.repository }}/releases/latest/download/ECHO-1.apk"
